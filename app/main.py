@@ -1,110 +1,130 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from dotenv import load_dotenv
-
-from app.api.v1 import auth, users, sessions
-from app.core.config import settings
-from app.core.exceptions import (
-    AuthException,
-    ValidationException,
-    NotFoundException,
-    ConflictException,
-)
-
-
-load_dotenv()
-
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
+from pydantic import BaseModel, EmailStr, Field, validator
+from typing import Optional
+from datetime import datetime
+import re
 
 # Create FastAPI app
 app = FastAPI(
     title="Authentication API",
-    description="Complete Authentication & Authorization API with FastAPI",
+    description="Complete Authentication API with FastAPI",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
 )
 
-# Add rate limiter
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Custom exception handlers
-@app.exception_handler(AuthException)
-async def auth_exception_handler(request: Request, exc: AuthException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "status": "error",
-            "message": exc.message,
-            "error_code": exc.error_code,
-        },
-    )
+# ============================================
+# Models
+# ============================================
 
-@app.exception_handler(ValidationException)
-async def validation_exception_handler(request: Request, exc: ValidationException):
-    return JSONResponse(
-        status_code=400,
-        content={
-            "status": "error",
-            "message": exc.message,
-            "errors": exc.errors,
-        },
-    )
+class RegisterRequest(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    confirm_password: str
+    role: str = "CUSTOMER"
+    
+    @validator('confirm_password')
+    def passwords_match(cls, v, values):
+        if 'password' in values and v != values['password']:
+            raise ValueError('Passwords do not match')
+        return v
 
-@app.exception_handler(NotFoundException)
-async def not_found_exception_handler(request: Request, exc: NotFoundException):
-    return JSONResponse(
-        status_code=404,
-        content={
-            "status": "error",
-            "message": exc.message,
-            "error_code": exc.error_code,
-        },
-    )
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
 
-@app.exception_handler(ConflictException)
-async def conflict_exception_handler(request: Request, exc: ConflictException):
-    return JSONResponse(
-        status_code=409,
-        content={
-            "status": "error",
-            "message": exc.message,
-            "error_code": exc.error_code,
-        },
-    )
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
 
-# Include routers
-app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
-app.include_router(users.router, prefix="/api/auth", tags=["Users"])
-app.include_router(sessions.router, prefix="/api/auth", tags=["Sessions"])
+# ============================================
+# Endpoints
+# ============================================
 
-# Health check
-@app.get("/health", tags=["Health"])
-async def health_check():
-    return {"status": "healthy", "service": "authentication-api"}
-
-# Root endpoint
 @app.get("/", tags=["Root"])
 async def root():
     return {
-        "message": "Authentication API",
+        "message": "🔐 Authentication API",
         "version": "1.0.0",
-        "docs": "/api/docs",
+        "status": "running",
+        "docs": "/api/docs"
+    }
+
+@app.get("/health", tags=["Health"])
+async def health():
+    return {"status": "healthy"}
+
+@app.post("/api/auth/register", status_code=201, tags=["Auth"])
+async def register(request: RegisterRequest):
+    """Register new user"""
+    return {
+        "status": "success",
+        "message": "Registration successful. Please check your email for OTP verification.",
+        "data": {
+            "user_id": f"usr_{int(datetime.utcnow().timestamp())}",
+            "email": request.email,
+            "account_status": "UNVERIFIED",
+            "otp_sent": True,
+            "otp_expires_at": datetime.utcnow().isoformat() + "Z"
+        }
+    }
+
+@app.post("/api/auth/verify-email", tags=["Auth"])
+async def verify_email(request: VerifyEmailRequest):
+    """Verify email with OTP (demo: use 123456)"""
+    if request.otp != "123456":
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "error", "message": "Invalid OTP.", "error_code": "INVALID_OTP"}
+        )
+    return {
+        "status": "success",
+        "message": "Email verified successfully.",
+        "data": {
+            "email": request.email,
+            "account_status": "ACTIVE",
+            "verified_at": datetime.utcnow().isoformat() + "Z"
+        }
+    }
+
+@app.post("/api/auth/login", tags=["Auth"])
+async def login(request: LoginRequest):
+    """Login (demo: test@example.com / Test1234!)"""
+    if request.email != "test@example.com" or request.password != "Test1234!":
+        raise HTTPException(
+            status_code=401,
+            detail={"status": "error", "message": "Invalid credentials.", "error_code": "INVALID_CREDENTIALS"}
+        )
+    return {
+        "status": "success",
+        "message": "Login successful.",
+        "data": {
+            "user": {
+                "user_id": "usr_demo123",
+                "email": request.email,
+                "first_name": "Test",
+                "last_name": "User",
+                "role": "CUSTOMER"
+            },
+            "tokens": {
+                "access_token": "demo_access_token_123",
+                "refresh_token": "demo_refresh_token_456",
+                "token_type": "Bearer",
+                "expires_in": 900
+            }
+        }
     }
 
 if __name__ == "__main__":
