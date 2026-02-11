@@ -37,6 +37,7 @@ async def register(
     """
     auth_service = AuthService(db)
     return await auth_service.register_user(request)
+    print("otp sent",otp)
 
 
 @router.post("/verify-email", status_code=status.HTTP_200_OK)
@@ -69,6 +70,7 @@ async def resend_otp(
     """
     auth_service = AuthService(db)
     return await auth_service.resend_otp(request)
+
 
 
 @router.post("/login", status_code=status.HTTP_200_OK)
